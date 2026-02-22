@@ -1,0 +1,3 @@
+hydrogram
+aiohttp
+tg-file-stream-bot
