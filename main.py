@@ -1,6 +1,8 @@
 import asyncio
 import aiohttp
+import hydrogram # Добавили этот импорт
 from hydrogram import Client, filters
+from hydrogram.handlers import MessageHandler, CallbackQueryHandler
 from hydrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
 
@@ -12,13 +14,12 @@ CHANNEL_ID = -1003691010798
 BASE_URL = "https://bot3-thub.onrender.com"
 SITE_API = "https://paritube.xo.je/api_upload.php"
 
-# Временное хранилище данных пользователей
 user_data = {} 
-app = None  # Теперь инициализируем внутри функции
+app = None 
 
-# --- ОБРАБОТЧИКИ (Переносим сюда) ---
+# --- ОБРАБОТЧИКИ ---
 async def start_cmd(client, message):
-    await message.reply("Привет! Чтобы публиковать видео, настройте профиль:\n1. Пришли свой ID (например: `ID: 1`)\n2. Пришли свои COOKIE (например: `__test=...`)")
+    await message.reply("Привет! Чтобы публиковать видео:\n1. Пришли свой ID (например: `ID: 1`)\n2. Пришли COOKIE (например: `__test=...`)", parse_mode=hydrogram.enums.ParseMode.MARKDOWN)
 
 async def set_id(client, message):
     uid = message.matches[0].group(1)
@@ -33,33 +34,36 @@ async def set_cookie(client, message):
     await message.reply("✅ Cookie сохранены! Присылай видео.")
 
 async def handle_video(client, message):
-    user_id = message.from_user.id
-    if user_id not in user_data or 'site_id' not in user_data[user_id]:
+    uid = message.from_user.id
+    if uid not in user_data or 'site_id' not in user_data[uid]:
         await message.reply("❌ Сначала пришли свой ID в формате `ID: 1`")
         return
 
     msg = await message.reply("⏳ Генерирую прямую ссылку...")
-    fwd = await message.forward(CHANNEL_ID)
-    stream_link = f"{BASE_URL}/stream/{fwd.id}"
-    title = message.caption if message.caption else f"Видео {fwd.id}"
+    try:
+        fwd = await message.forward(CHANNEL_ID)
+        stream_link = f"{BASE_URL}/stream/{fwd.id}"
+        title = message.caption if message.caption else f"Видео {fwd.id}"
 
-    btn = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🚀 ОПУБЛИКОВАТЬ НА САЙТЕ", callback_data=f"pub_{fwd.id}")
-    ]])
-    
-    user_data[user_id][f"title_{fwd.id}"] = title
-    user_data[user_id][f"url_{fwd.id}"] = stream_link
-    await msg.edit(f"✅ Ссылка готова!\n\n**Название:** {title}\n**URL:** {stream_link}", reply_markup=btn)
+        btn = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🚀 ОПУБЛИКОВАТЬ НА САЙТЕ", callback_data=f"pub_{fwd.id}")
+        ]])
+        
+        user_data[uid][f"title_{fwd.id}"] = title
+        user_data[uid][f"url_{fwd.id}"] = stream_link
+        await msg.edit(f"✅ Ссылка готова!\n\n**Название:** {title}\n**URL:** {stream_link}", reply_markup=btn)
+    except Exception as e:
+        await msg.edit(f"❌ Ошибка: {e}")
 
 async def publish_call(client, callback_query):
     fwd_id = callback_query.data.split("_")[1]
     uid = callback_query.from_user.id
     
     if uid not in user_data or 'cookie' not in user_data[uid]:
-        await callback_query.answer("❌ Ошибка: Пришли куки __test=... из браузера", show_alert=True)
+        await callback_query.answer("❌ Ошибка: Сначала пришли куки __test=...", show_alert=True)
         return
 
-    data = {
+    payload = {
         "key": "pari_secret_777",
         "title": user_data[uid].get(f"title_{fwd_id}"),
         "url": user_data[uid].get(f"url_{fwd_id}"),
@@ -73,16 +77,16 @@ async def publish_call(client, callback_query):
 
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(SITE_API, data=data, headers=headers, timeout=10) as resp:
+            async with session.post(SITE_API, data=payload, headers=headers, timeout=15) as resp:
                 res_text = await resp.text()
                 if "OK" in res_text:
-                    await callback_query.message.edit(f"🎉 **ОПУБЛИКОВАНО!**\nСмотреть: https://paritube.xo.je")
+                    await callback_query.message.edit(f"🎉 **ОПУБЛИКОВАНО!**\nВидео успешно улетело на PariTube.")
                 else:
-                    await callback_query.answer(f"❌ Ошибка хостинга: {res_text[:50]}", show_alert=True)
+                    await callback_query.answer(f"❌ Хостинг отклонил запрос (проверь куки)", show_alert=True)
         except Exception as e:
-            await callback_query.answer(f"❌ Тайм-аут или ошибка сети", show_alert=True)
+            await callback_query.answer(f"❌ Ошибка связи с сайтом", show_alert=True)
 
-# --- СЕРВЕР СТРИМИНГА ---
+# --- СЕРВЕР ---
 async def stream_handler(request):
     try:
         msg_id = int(request.match_info['msg_id'])
@@ -97,17 +101,14 @@ async def stream_handler(request):
 # --- ЗАПУСК ---
 async def run_bot():
     global app
-    # Создаем клиент ВНУТРИ цикла
     app = Client("paritube_full", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
     
-    # Регистрируем хендлеры вручную
-    app.add_handler(hydrogram.handlers.MessageHandler(start_cmd, filters.command("start")))
-    app.add_handler(hydrogram.handlers.MessageHandler(set_id, filters.regex(r"ID: (\d+)")))
-    app.add_handler(hydrogram.handlers.MessageHandler(set_cookie, filters.regex(r"__test=(.*)")))
-    app.add_handler(hydrogram.handlers.MessageHandler(handle_video, filters.video | filters.document))
-    app.add_handler(hydrogram.handlers.CallbackQueryHandler(publish_call, filters.regex(r"pub_(\d+)")))
-    
-    import hydrogram.handlers # Чтобы работало добавление выше
+    # Регистрация хендлеров
+    app.add_handler(MessageHandler(start_cmd, filters.command("start")))
+    app.add_handler(MessageHandler(set_id, filters.regex(r"ID: (\d+)")))
+    app.add_handler(MessageHandler(set_cookie, filters.regex(r"__test=(.*)")))
+    app.add_handler(MessageHandler(handle_video, filters.video | filters.document))
+    app.add_handler(CallbackQueryHandler(publish_call, filters.regex(r"pub_(\d+)")))
     
     await app.start()
     
@@ -117,12 +118,11 @@ async def run_bot():
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", 8080).start()
     
-    print("🚀 Бот запущен на Render!")
+    print("🚀 Бот онлайн!")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    import hydrogram.handlers
     try:
         asyncio.run(run_bot())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
