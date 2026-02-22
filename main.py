@@ -1,6 +1,7 @@
 import os
 import asyncio
 from hydrogram import Client, filters
+from hydrogram.handlers import MessageHandler # Добавили импорт
 from hydrogram.types import Message
 from aiohttp import web
 
@@ -11,14 +12,13 @@ BOT_TOKEN = "8036788093:AAFSlZiU78PMBWX8m3QyHxfiJ9ufaALHhoQ"
 CHANNEL_ID = -1002244248474
 BASE_URL = "https://bot3-thub.onrender.com"
 
-# Глобальная переменная для клиента
 app = None
 
 # --- ЛОГИКА БОТА ---
 async def handle_video(client, message: Message):
-    if message.document and not message.document.mime_type.startswith("video/"):
-        return await message.reply("❌ Это не видео.")
-
+    if message.document and not (message.document.mime_type and message.document.mime_type.startswith("video/")):
+        return
+    
     msg = await message.reply("⏳ Сохраняю видео в облако PariTube...")
     try:
         fwd = await message.forward(CHANNEL_ID)
@@ -35,24 +35,27 @@ async def handle_video(client, message: Message):
 
 # --- ЛОГИКА СТРИМИНГА ---
 async def stream_handler(request):
-    msg_id = int(request.match_info['msg_id'])
-    message = await app.get_messages(CHANNEL_ID, msg_id)
-    
-    if not message or not (message.video or message.document):
-        return web.Response(text="Видео не найдено", status=404)
+    try:
+        msg_id = int(request.match_info['msg_id'])
+        message = await app.get_messages(CHANNEL_ID, msg_id)
+        
+        if not message or not (message.video or message.document):
+            return web.Response(text="Видео не найдено", status=404)
 
-    media = message.video or message.document
-    headers = {
-        "Content-Type": media.mime_type or "video/mp4",
-        "Content-Disposition": f'inline; filename="{media.file_name or "video.mp4"}"',
-        "Accept-Ranges": "bytes"
-    }
+        media = message.video or message.document
+        headers = {
+            "Content-Type": media.mime_type or "video/mp4",
+            "Content-Disposition": f'inline; filename="{media.file_name or "video.mp4"}"',
+            "Accept-Ranges": "bytes"
+        }
 
-    response = web.StreamResponse(status=200, headers=headers)
-    await response.prepare(request)
-    async for chunk in app.stream_media(media):
-        await response.write(chunk)
-    return response
+        response = web.StreamResponse(status=200, headers=headers)
+        await response.prepare(request)
+        async for chunk in app.stream_media(media):
+            await response.write(chunk)
+        return response
+    except Exception as e:
+        return web.Response(text=str(e), status=500)
 
 async def watch_handler(request):
     msg_id = request.match_info['msg_id']
@@ -62,22 +65,20 @@ async def watch_handler(request):
 # --- ЗАПУСК ---
 async def main():
     global app
-    # Инициализируем клиент СТРОГО внутри асинхронного цикла
     app = Client(
         "paritube_stream", 
         api_id=API_ID, 
         api_hash=API_HASH, 
         bot_token=BOT_TOKEN,
-        in_memory=True # Чтобы не плодить файлы сессий на Render
+        in_memory=True
     )
     
-    # Регистрируем хендлер программно
-    app.add_handler(filters.video | filters.document)(handle_video)
+    # ИСПРАВЛЕННЫЙ МЕТОД РЕГИСТРАЦИИ ХЕНДЛЕРА
+    app.add_handler(MessageHandler(handle_video, filters.video | filters.document))
     
     await app.start()
     print("🤖 Бот запущен...")
 
-    # Настройка веб-сервера
     server = web.Application()
     server.add_routes([
         web.get('/stream/{msg_id}', stream_handler),
@@ -90,11 +91,7 @@ async def main():
     await site.start()
     print("🌍 Сервер стриминга запущен на порту 8080")
 
-    # Держим всё запущенным
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())
