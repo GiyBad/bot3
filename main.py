@@ -9,7 +9,7 @@ from aiohttp import web
 API_ID = 34753668
 API_HASH = "71f8cba6061f6a8973720dd52e7ed2bb"
 BOT_TOKEN = "8036788093:AAFSlZiU78PMBWX8m3QyHxfiJ9ufaALHhoQ"
-CHANNEL_ID = -1002244248474
+CHANNEL_ID = -1003691010798
 BASE_URL = "https://bot3-thub.onrender.com"
 
 app = None
